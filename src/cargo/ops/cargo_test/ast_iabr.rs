@@ -57,6 +57,10 @@ pub enum OpKind {
     Sub,
     Mul,
     Div,
+    Eq,
+    Ne,
+    Lt,
+    Gt,
 }
 
 /// A single operator occurrence with a stable per-file identifier.
@@ -95,6 +99,22 @@ impl<'ast> Visit<'ast> for ArithVisitor {
             syn::BinOp::Div(tok) => {
                 let lc = tok.span.start();
                 (Some(OpKind::Div), lc.line as u32, lc.column as u32)
+            }
+            syn::BinOp::Eq(tok) => {
+                let lc = tok.spans[0].start();
+                (Some(OpKind::Eq), lc.line as u32, lc.column as u32)
+            }
+            syn::BinOp::Ne(tok) => {
+                let lc = tok.spans[0].start();
+                (Some(OpKind::Ne), lc.line as u32, lc.column as u32)
+            }
+            syn::BinOp::Le(tok) => {
+                let lc = tok.spans[0].start();
+                (Some(OpKind::Lt), lc.line as u32, lc.column as u32)
+            }
+            syn::BinOp::Ge(tok) => {
+                let lc = tok.spans[0].start();
+                (Some(OpKind::Lt), lc.line as u32, lc.column as u32)
             }
             _ => (None, 0, 0),
         };

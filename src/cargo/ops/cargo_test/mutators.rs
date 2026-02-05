@@ -123,6 +123,92 @@ impl Mutator for DivMulMutator {
     }
 }
 
+// Equals/Not Equals
+pub struct EqNeMutator;
+
+impl Mutator for EqNeMutator {
+    fn name(&self) -> &'static str { "eq_ne" }
+
+    fn build_context(&self, ws: &Workspace<'_>) -> syn::Result<MutationContext> {
+        let IndexResult { index, cached_asts } = build_index_with_cache(ws)?;
+        Ok(MutationContext { index, cached_asts })
+    }
+
+    fn enumerate_targets(&self, ctx: &MutationContext) -> Vec<Target> 
+    {
+        let mut out = Vec::new();
+        for (path, occs) in ctx.index.iter() 
+        {
+
+        let mut local_id = 0;
+        for occ in occs 
+        {
+            // Grab only occurences of the == abd != operators
+            if occ.kind == super::ast_iabr::OpKind::Eq || occ.kind == super::ast_iabr::OpKind::Ne 
+            {
+                out.push(Target 
+                {
+                    path: path.clone(),
+                    id: local_id,
+                    line: occ.line,
+                    column: occ.column,
+                });
+            local_id += 1;
+            }
+        }
+        }
+        out
+    }
+
+    fn mutate(&self, ctx: &MutationContext, target: &Target) -> syn::Result<String> {
+        mutate_eq_ne(ctx, &target.path, target.id)
+    }
+}
+
+// Less Than/Greater Than
+pub struct LtGtMutator;
+
+impl Mutator for LtGtMutator {
+    fn name(&self) -> &'static str { "lt_gt" }
+
+    fn build_context(&self, ws: &Workspace<'_>) -> syn::Result<MutationContext> {
+        let IndexResult { index, cached_asts } = build_index_with_cache(ws)?;
+        Ok(MutationContext { index, cached_asts })
+    }
+
+    fn enumerate_targets(&self, ctx: &MutationContext) -> Vec<Target> 
+    {
+        let mut out = Vec::new();
+        for (path, occs) in ctx.index.iter() 
+        {
+
+        let mut local_id = 0;
+        for occ in occs 
+        {
+            // Grab only occurences of the == abd != operators
+            if occ.kind == super::ast_iabr::OpKind::Lt || occ.kind == super::ast_iabr::OpKind::Gt 
+            {
+                out.push(Target 
+                {
+                    path: path.clone(),
+                    id: local_id,
+                    line: occ.line,
+                    column: occ.column,
+                });
+            local_id += 1;
+            }
+        }
+        }
+        out
+    }
+
+    fn mutate(&self, ctx: &MutationContext, target: &Target) -> syn::Result<String> {
+        mutate_lt_gt(ctx, &target.path, target.id)
+    }
+}
+
+
+
 /// Flip Add<->Sub for the given occurrence id in the specified file.
 /// Uses cached AST if available; otherwise parses on demand.
 fn mutate_add_sub(ctx: &MutationContext, path: &Path, id: u32) -> syn::Result<String> {
@@ -154,6 +240,42 @@ fn mutate_div_mul(ctx: &MutationContext, path: &Path, id: u32) -> syn::Result<St
 
     // Fold and flip the targeted operator.
     let mut folder = DivMulFlipFold { target_id: id, seen: 0 };
+    let mutated = folder.fold_file(ast);
+
+    // Pretty-print the mutated AST back to source.
+    Ok(prettyplease::unparse(&mutated))
+}
+
+// Flip == <-> != 
+fn mutate_eq_ne(ctx: &MutationContext, path: &Path, id: u32) -> syn::Result<String> {
+    // Fetch AST from cache or parse source.
+    let ast: File = if let Some(cached) = ctx.cached_asts.get(path) {
+        cached.clone()
+    } else {
+        let src = fs::read_to_string(path).expect("Failed to open file");
+        syn::parse_file(&src)?
+    };
+
+    // Fold and flip the targeted operator.
+    let mut folder = EqNeFlipFold { target_id: id, seen: 0 };
+    let mutated = folder.fold_file(ast);
+
+    // Pretty-print the mutated AST back to source.
+    Ok(prettyplease::unparse(&mutated))
+}
+
+// Flip <= <-> =>
+fn mutate_lt_gt(ctx: &MutationContext, path: &Path, id: u32) -> syn::Result<String> {
+    // Fetch AST from cache or parse source.
+    let ast: File = if let Some(cached) = ctx.cached_asts.get(path) {
+        cached.clone()
+    } else {
+        let src = fs::read_to_string(path).expect("Failed to open file");
+        syn::parse_file(&src)?
+    };
+
+    // Fold and flip the targeted operator.
+    let mut folder = LtGtFlipFold { target_id: id, seen: 0 };
     let mutated = folder.fold_file(ast);
 
     // Pretty-print the mutated AST back to source.
@@ -200,6 +322,54 @@ impl Fold for AddSubFlipFold {
                     syn::BinOp::Sub(Default::default())
                 } else {
                     syn::BinOp::Add(Default::default())
+                };
+            }
+            self.seen += 1;
+        }
+        fold_expr_binary(self, node)
+    }
+}
+
+/// Folder that flips the Nth add/sub operator where N == target_id.
+struct EqNeFlipFold {
+    target_id: u32,
+    seen: u32,
+}
+
+impl Fold for EqNeFlipFold {
+    fn fold_expr_binary(&mut self, mut node: syn::ExprBinary) -> syn::ExprBinary {
+        let is_eq = matches!(node.op, syn::BinOp::Eq(_));
+        let is_ne = matches!(node.op, syn::BinOp::Ne(_));
+        if is_eq || is_ne {
+            if self.seen == self.target_id {
+                node.op = if is_eq {
+                    syn::BinOp::Ne(Default::default())
+                } else {
+                    syn::BinOp::Eq(Default::default())
+                };
+            }
+            self.seen += 1;
+        }
+        fold_expr_binary(self, node)
+    }
+}
+
+/// Folder that flips the Nth add/sub operator where N == target_id.
+struct LtGtFlipFold {
+    target_id: u32,
+    seen: u32,
+}
+
+impl Fold for LtGtFlipFold {
+    fn fold_expr_binary(&mut self, mut node: syn::ExprBinary) -> syn::ExprBinary {
+        let is_lt = matches!(node.op, syn::BinOp::Le(_));
+        let is_gt = matches!(node.op, syn::BinOp::Ge(_));
+        if is_lt || is_gt {
+            if self.seen == self.target_id {
+                node.op = if is_lt {
+                    syn::BinOp::Ge(Default::default())
+                } else {
+                    syn::BinOp::Le(Default::default())
                 };
             }
             self.seen += 1;

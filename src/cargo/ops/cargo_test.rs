@@ -194,10 +194,10 @@ impl Drop for FileReplacer {
 
 // Mutation campaign: flip one operator at a time and run tests; report killed/survivors.
 fn run_mutation_campaign(ws: &Workspace<'_>, options: &TestOptions, test_args: &[&str]) -> CliResult {
-    use self::mutators::{AddSubMutator, DivMulMutator, Mutator};
+    use self::mutators::{AddSubMutator, DivMulMutator, EqNeMutator, LtGtMutator, Mutator};
 
     // Select mutators to run (can be parameterized later).
-    let mutators: Vec<Box<dyn Mutator>> = vec![Box::new(AddSubMutator), Box::new(DivMulMutator)];
+    let mutators: Vec<Box<dyn Mutator>> = vec![Box::new(AddSubMutator), Box::new(DivMulMutator), Box::new(EqNeMutator), Box::new(LtGtMutator)];
 
     // Prepare non-mutation test options to avoid recursion.
     let mut plain_opts = options.clone();
@@ -230,7 +230,7 @@ fn run_mutation_campaign(ws: &Workspace<'_>, options: &TestOptions, test_args: &
     }
 
     if !options.mutation_long {
-        eprintln!("Mutators: add_sub, mul_div\n");
+        eprintln!("Mutators: add_sub, mul_div, eq_ne\n");
     }
     // Run each mutator sequentially and emit per-mutator summaries.
     for mutator in mutators.into_iter() {
@@ -265,6 +265,8 @@ fn run_mutation_campaign(ws: &Workspace<'_>, options: &TestOptions, test_args: &
             let header = match mutator.name() {
                 "add_sub" => "Addition <-> Subtraction",
                 "mul_div" => "Multiplication <-> Division",
+                "eq_ne" => "Equals <-> Not Equals",
+                "lt_gt" => "Less Than <-> Greater Than",
                 other => other,
             };
             eprintln!("Mutations:\n{}\n", header);
