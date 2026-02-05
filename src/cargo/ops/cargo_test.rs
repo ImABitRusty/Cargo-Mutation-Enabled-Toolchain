@@ -276,6 +276,18 @@ fn run_mutation_campaign(ws: &Workspace<'_>, options: &TestOptions, test_args: &
         let mut processed: usize = 0;
 
         for target in targets {
+            if options.mutation_long {
+                // Friendly header per mutant before executing tests
+                eprintln!(
+                    "Mutant {}/{}: file={} id={} @{}:{}",
+                    processed + 1,
+                    total,
+                    target.path.display(),
+                    target.id,
+                    target.line,
+                    target.column
+                );
+            }
             // Produce mutated source.
             let mutated = match mutator.mutate(&ctx, &target) 
             {
@@ -311,7 +323,7 @@ fn run_mutation_campaign(ws: &Workspace<'_>, options: &TestOptions, test_args: &
                     survived += 1;
                     results_vec.push(MutResultEntry { file: target.path.display().to_string(), id: target.id, line: target.line, column: target.column, outcome: "survived" });
                     if options.mutation_long {
-                        eprintln!("MUT result kind={} outcome=survived file={:?} id={}", mutator.name(), &target.path, target.id);
+                        eprintln!("Survived (tests did not fail) - kind={} file={:?} id={} @{}:{}", mutator.name(), &target.path, target.id, target.line, target.column);
                     } else {
                         processed += 1;
                         let secs = start.elapsed().as_secs_f32();
@@ -323,7 +335,7 @@ fn run_mutation_campaign(ws: &Workspace<'_>, options: &TestOptions, test_args: &
                     killed += 1;
                     results_vec.push(MutResultEntry { file: target.path.display().to_string(), id: target.id, line: target.line, column: target.column, outcome: "killed" });
                     if options.mutation_long {
-                        eprintln!("MUT result kind={} outcome=killed file={:?} id={}", mutator.name(), &target.path, target.id);
+                        eprintln!("Killed (tests failed as expected) - kind={} file={:?} id={} @{}:{}", mutator.name(), &target.path, target.id, target.line, target.column);
                     } else {
                         processed += 1;
                         let secs = start.elapsed().as_secs_f32();
@@ -343,10 +355,12 @@ fn run_mutation_campaign(ws: &Workspace<'_>, options: &TestOptions, test_args: &
                     });
                     if options.mutation_long {
                         eprintln!(
-                            "MUT result kind={} outcome=killed (error while running tests) file={:?} id={}",
+                            "Killed (infrastructure error while running tests) - kind={} file={:?} id={} @{}:{}",
                             mutator.name(),
                             &target.path,
-                            target.id
+                            target.id,
+                            target.line,
+                            target.column
                         );
                     } else {
                         processed += 1;
@@ -363,10 +377,15 @@ fn run_mutation_campaign(ws: &Workspace<'_>, options: &TestOptions, test_args: &
                 }
 
             }
+            if options.mutation_long {
+                eprintln!("----");
+            }
         }
 
         if options.mutation_long {
             eprintln!("MUT summary kind={} total={} killed={} survived={}", mutator.name(), total, killed, survived);
+            let score = if total == 0 { 0.0 } else { (killed as f32) * 100.0 / (total as f32) };
+            eprintln!("Mutation score: {:.1}%", score);
         } else {
             // Final summary block (single header printed earlier; do not reprint bar)
             eprintln!("\n");
