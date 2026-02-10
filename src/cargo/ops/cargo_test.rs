@@ -20,6 +20,7 @@ use std::fmt::Write;
 use std::io::{self, Write as IoWrite};
 use std::time::Instant;
 use std::path::{Path, PathBuf};
+use std::collections::BTreeMap;
 
 #[derive(Debug)]
 pub struct TestOptions {
@@ -214,8 +215,16 @@ fn run_mutation_campaign(ws: &Workspace<'_>, options: &TestOptions, test_args: &
     };
     let start = Instant::now();
 
-    #[derive(Serialize)]
-    struct MutResultEntry { file: String, id: u32, line: u32, column: u32, outcome: &'static str }
+    #[derive(Serialize, Clone)]
+    struct MutResultEntry {
+        file: String,
+        id: u32,
+        line: u32,
+        column: u32,
+        outcome: &'static str,
+    }
+
+
     #[derive(Serialize)]
     struct MutJson<'a> {
         kind: &'a str,
@@ -399,6 +408,7 @@ fn run_mutation_campaign(ws: &Workspace<'_>, options: &TestOptions, test_args: &
 
         // JSON output if requested: write mutator JSON file by kind
         if options.mutation_json {
+            eprintln!("mutation_json enabled");
             #[derive(Serialize)]
             struct MutJsonShort<'a> {
                 kind: &'a str,
@@ -410,19 +420,146 @@ fn run_mutation_campaign(ws: &Workspace<'_>, options: &TestOptions, test_args: &
                 survived: usize,
                 mode: &'a str,
             }
+            #[derive(Serialize)]
+            struct MutJsonMeta<'a> {
+                schema_version: u32,
+                kind: &'a str,
+                mode: &'a str,
+            }
+
+            #[derive(Serialize)]
+            struct MutJsonSummary {
+                files: usize,
+                targets: usize,
+                cached: usize,
+                total: usize,
+                killed: usize,
+                survived: usize,
+                score_pct: f32,
+                status: &'static str,
+            }
+
+            #[derive(Serialize)]
+            struct MutJsonFileGroup {
+                file: String,
+                killed_count: usize,
+                survived_count: usize,
+                killed: Vec<MutResultEntry>,
+                survived: Vec<MutResultEntry>,
+            }
+
+            #[derive(Serialize)]
+            struct MutJsonResults {
+                killed: Vec<MutResultEntry>,
+                survived: Vec<MutResultEntry>,
+                by_file: Vec<MutJsonFileGroup>,
+            }
+
+            #[derive(Serialize)]
+            struct MutJsonLongReadable<'a> {
+                meta: MutJsonMeta<'a>,
+                summary: MutJsonSummary,
+                results: MutJsonResults,
+            }
 
             let s = if options.mutation_long {
-                let json = MutJson {
-                    kind: mutator.name(),
-                    files: ctx.index.len(),
-                    targets: total,
-                    cached: ctx.cached_asts.len(),
-                    results: results_vec,
-                    total,
-                    killed,
-                    survived,
-                    mode: "long",
+                // 1) Partition results and group by file
+                let mut killed_entries = Vec::new();
+                let mut survived_entries = Vec::new();
+                let mut by_file_map: BTreeMap<String, (Vec<MutResultEntry>, Vec<MutResultEntry>)> =
+                    BTreeMap::new();
+
+                for e in results_vec.iter() {
+                    let slot = by_file_map
+                        .entry(e.file.clone())
+                        .or_insert_with(|| (Vec::new(), Vec::new()));
+
+                    if e.outcome == "killed" {
+                        killed_entries.push(MutResultEntry {
+                            file: e.file.clone(),
+                            id: e.id,
+                            line: e.line,
+                            column: e.column,
+                            outcome: e.outcome,
+                        });
+
+                        slot.0.push(MutResultEntry {
+                            file: e.file.clone(),
+                            id: e.id,
+                            line: e.line,
+                            column: e.column,
+                            outcome: e.outcome,
+                        });
+                    } else {
+                        survived_entries.push(MutResultEntry {
+                            file: e.file.clone(),
+                            id: e.id,
+                            line: e.line,
+                            column: e.column,
+                            outcome: e.outcome,
+                        });
+
+                        slot.1.push(MutResultEntry {
+                            file: e.file.clone(),
+                            id: e.id,
+                            line: e.line,
+                            column: e.column,
+                            outcome: e.outcome,
+                        });
+                    }
+                }
+
+
+
+                // 2) Convert grouped map into ordered sections
+                let mut by_file = Vec::with_capacity(by_file_map.len());
+                for (file, (killed, survived)) in by_file_map {
+                    by_file.push(MutJsonFileGroup {
+                        file,
+                        killed_count: killed.len(),
+                        survived_count: survived.len(),
+                        killed,
+                        survived,
+                    });
+                }
+
+                // 3) Summary fields
+                let score_pct = if total == 0 {
+                    0.0
+                } else {
+                    (killed as f32) * 100.0 / (total as f32)
                 };
+
+                let status = if survived == 0 && killed == total {
+                    "passed"
+                } else {
+                    "failed"
+                };
+
+                // 4) Final readable JSON
+                let json = MutJsonLongReadable {
+                    meta: MutJsonMeta {
+                        schema_version: 2,
+                        kind: mutator.name(),
+                        mode: "long",
+                    },
+                    summary: MutJsonSummary {
+                        files: ctx.index.len(),
+                        targets: total,
+                        cached: ctx.cached_asts.len(),
+                        total,
+                        killed,
+                        survived,
+                        score_pct,
+                        status,
+                    },
+                    results: MutJsonResults {
+                        killed: killed_entries,
+                        survived: survived_entries,
+                        by_file,
+                    },
+                };
+
                 serde_json::to_string_pretty(&json).unwrap_or_else(|_| "{}".to_string())
             } else {
                 let json = MutJsonShort {
@@ -437,6 +574,7 @@ fn run_mutation_campaign(ws: &Workspace<'_>, options: &TestOptions, test_args: &
                 };
                 serde_json::to_string_pretty(&json).unwrap_or_else(|_| "{}".to_string())
             };
+
 
             // Determine output path, include mutator kind in filename
             let out_dir = if let Some(ref dir) = options.mutation_json_dir {

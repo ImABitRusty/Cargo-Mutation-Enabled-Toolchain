@@ -1,0 +1,10 @@
+{
+  "kind": "add_sub",
+  "files": 1,
+  "targets": 16,
+  "cached": 1,
+  "total": 16,
+  "killed": 15,
+  "survived": 1,
+  "mode": "short"
+}

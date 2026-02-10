@@ -1,0 +1,10 @@
+{
+  "kind": "mul_div",
+  "files": 1,
+  "targets": 2,
+  "cached": 1,
+  "total": 2,
+  "killed": 2,
+  "survived": 0,
+  "mode": "short"
+}
