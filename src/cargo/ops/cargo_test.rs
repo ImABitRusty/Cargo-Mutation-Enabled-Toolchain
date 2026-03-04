@@ -18,9 +18,14 @@ use cargo_util::{ProcessBuilder, ProcessError};
 use std::ffi::OsString;
 use std::fmt::Write;
 use std::io::{self, Write as IoWrite};
+use std::io::IsTerminal;
 use std::time::Instant;
 use std::path::{Path, PathBuf};
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
+use std::time::Duration;
+use std::thread::sleep;
+use std::process::Child;
 
 #[derive(Debug)]
 pub struct TestOptions {
@@ -86,6 +91,35 @@ impl UnitTestError {
             TestKind::Doctest => args.push_str("--doc"),
         }
         args
+    }
+}
+
+
+// Timeout helper
+fn exec_with_timeout(mut cmd: ProcessBuilder, timeout: Duration) -> CargoResult<()> {
+    // Convert cargo_util::ProcessBuilder -> std::process::Command
+    let mut command = cmd.build_command();
+    let mut child: Child = command
+        .spawn()
+        .map_err(|e| anyhow::Error::from(e))?;
+
+    let start = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().map_err(|e| anyhow::Error::from(e))? {
+            if status.success() {
+                return Ok(());
+            } else {
+                return Err(anyhow::format_err!("test process exited with {status}").into());
+            }
+        }
+
+        if start.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(anyhow::format_err!("test process timed out after {:?}", timeout).into());
+        }
+
+        sleep(Duration::from_millis(25));
     }
 }
 
@@ -173,6 +207,44 @@ impl<'a> Drop for ShellVerbosityGuard<'a> {
     }
 }
 
+// Helper to stop the program on a surviving mutant
+enum SurviveAction
+{
+    ContinueNoMoreAsks,
+    Stop,
+}
+
+fn prompt_on_survivor() -> Option<SurviveAction> // The actual function to call for the prompt
+{
+    if !io::stdin().is_terminal() || !io::stderr().is_terminal()   // Prevent from overwriting terminal
+    {
+        return None;
+    }
+
+    eprintln!();
+    eprintln!("A mutant has survived testing");
+    eprintln!("Would you like to stop the test? y/n");
+    let _ = io::stderr().flush();
+
+    let mut line = String::new();                        // If there input errors, treat as none
+    if io::stdin().read_line(&mut line).is_err()
+    {
+        return None;
+    }
+
+    match line.trim().to_ascii_lowercase().as_str()     // Get y or n or none
+    {
+        "y" | "yes" => Some(SurviveAction::Stop),
+        "n" | "no"  => Some(SurviveAction::ContinueNoMoreAsks),
+        _           => 
+        {
+            eprintln!("Please enter y or n");
+            prompt_on_survivor()  // Recursive call
+        }
+    }
+}
+
+
 // Replace a file's contents during a scope and restore original on drop.
 struct FileReplacer {
     path: std::path::PathBuf,
@@ -192,6 +264,7 @@ impl Drop for FileReplacer {
         let _ = std::fs::write(&self.path, &self.original);
     }
 }
+
 
 // Mutation campaign: flip one operator at a time and run tests; report killed/survivors.
 fn run_mutation_campaign(ws: &Workspace<'_>, options: &TestOptions, test_args: &[&str]) -> CliResult {
@@ -214,6 +287,9 @@ fn run_mutation_campaign(ws: &Workspace<'_>, options: &TestOptions, test_args: &
         s
     };
     let start = Instant::now();
+
+    let mut continue_without_prompt = false;  // Bool to check where to ask
+    let mut stop_now = false;                 // Bool to stop test
 
     #[derive(Serialize, Clone)]
     struct MutResultEntry {
@@ -242,7 +318,7 @@ fn run_mutation_campaign(ws: &Workspace<'_>, options: &TestOptions, test_args: &
         eprintln!("Mutators: add_sub, mul_div, eq_ne\n");
     }
     // Run each mutator sequentially and emit per-mutator summaries.
-    for mutator in mutators.into_iter() {
+    'mutators: for mutator in mutators.into_iter() {
         if options.mutation_long {
             eprintln!("MUT start kind={} mode=one-at-a-time", mutator.name());
         }
@@ -286,7 +362,7 @@ fn run_mutation_campaign(ws: &Workspace<'_>, options: &TestOptions, test_args: &
         let mut results_vec: Vec<MutResultEntry> = Vec::new();
         let mut processed: usize = 0;
 
-        for target in targets {
+        'targets: for target in targets {
             if options.mutation_long {
                 // Friendly header per mutant before executing tests
                 eprintln!(
@@ -332,9 +408,67 @@ fn run_mutation_campaign(ws: &Workspace<'_>, options: &TestOptions, test_args: &
             match run_tests_once(ws, &plain_opts, test_args, !options.mutation_long) {
                 Ok(true) => {
                     survived += 1;
-                    results_vec.push(MutResultEntry { file: target.path.display().to_string(), id: target.id, line: target.line, column: target.column, outcome: "survived" });
+                    results_vec.push(MutResultEntry 
+                        { 
+                            file: target.path.display().to_string(), 
+                            id: target.id, 
+                            line: target.line, 
+                            column: target.column,
+                             outcome: "survived" 
+                        });
+                    
+                    // Pause on the first survivor
+                    if !continue_without_prompt 
+                    {
+                        eprintln!
+                        (
+                            "\nSURVIVOR: kind={} file={} id={} @{}:{}",
+                            mutator.name(),
+                            target.path.display(),
+                            target.id,
+                            target.line,
+                            target.column
+                        );
+
+                    // Prompt on first survivor
+                        match prompt_on_survivor()
+                        {
+                            Some(SurviveAction::ContinueNoMoreAsks) =>
+                            {
+                                continue_without_prompt = true;
+                            }
+                            Some(SurviveAction::Stop) =>
+                            {
+                                stop_now = true;
+                            }
+                            None =>
+                            {
+                                continue_without_prompt = true;
+                            }
+                        }
+                    }
+                    
+
+                    // Stop the test
+                    if stop_now
+                    {
+                        if !options.mutation_long
+                        {
+                            eprintln!();
+                        }
+                        break 'targets;
+                    }
+                    
                     if options.mutation_long {
-                        eprintln!("Survived (tests did not fail) - kind={} file={:?} id={} @{}:{}", mutator.name(), &target.path, target.id, target.line, target.column);
+                        eprintln!
+                        (
+                            "Survived (tests did not fail) - kind={} file={:?} id={} @{}:{}", 
+                            mutator.name(), 
+                            &target.path, 
+                            target.id, 
+                            target.line, 
+                            target.column
+                        );
                     } else {
                         processed += 1;
                         let secs = start.elapsed().as_secs_f32();
@@ -354,26 +488,46 @@ fn run_mutation_campaign(ws: &Workspace<'_>, options: &TestOptions, test_args: &
                         let _ = io::stderr().flush();
                     }
                 }
-                Err(_) => {
-                    // Any error while running tests is treated as killing the mutant
+
+
+                Err(e) => 
+                {
+                    // Distinguish timeouts from other infra errors
+                    let msg = format!("{e:?}");
+                    let outcome: &'static str = if msg.contains("timed out") || msg.contains("timed out after") 
+                    {
+                        "timeout"
+                    } 
+                    else 
+                    {
+                        "killed"
+                    };
+
                     killed += 1;
-                    results_vec.push(MutResultEntry {
+                    results_vec.push(MutResultEntry 
+                    {
                         file: target.path.display().to_string(),
                         id: target.id,
                         line: target.line,
                         column: target.column,
-                        outcome: "killed",
+                        outcome,
                     });
-                    if options.mutation_long {
+
+                    if options.mutation_long 
+                    {
                         eprintln!(
-                            "Killed (infrastructure error while running tests) - kind={} file={:?} id={} @{}:{}",
-                            mutator.name(),
-                            &target.path,
-                            target.id,
-                            target.line,
-                            target.column
-                        );
-                    } else {
+                        "Killed ({}) - kind={} file={:?} id={} @{}:{}",
+                        outcome,
+                        mutator.name(),
+                        &target.path,
+                        target.id,
+                        target.line,
+                        target.column
+                                );
+                        eprintln!("[DEBUG] error: {msg}");
+                    } 
+                    else 
+                    {
                         processed += 1;
                         let secs = start.elapsed().as_secs_f32();
                         eprint!(
@@ -382,10 +536,10 @@ fn run_mutation_campaign(ws: &Workspace<'_>, options: &TestOptions, test_args: &
                             total,
                             render_bar(processed, total),
                             secs
-                        );
+                                );
                         let _ = io::stderr().flush();
                     }
-                }
+                }           
 
             }
             if options.mutation_long {
@@ -474,15 +628,15 @@ fn run_mutation_campaign(ws: &Workspace<'_>, options: &TestOptions, test_args: &
                         .entry(e.file.clone())
                         .or_insert_with(|| (Vec::new(), Vec::new()));
 
-                    if e.outcome == "killed" {
+                    if e.outcome == "killed" || e.outcome == "timeout" 
+                    {
                         killed_entries.push(MutResultEntry {
-                            file: e.file.clone(),
-                            id: e.id,
-                            line: e.line,
-                            column: e.column,
-                            outcome: e.outcome,
-                        });
-
+                        file: e.file.clone(),
+                        id: e.id,
+                        line: e.line,
+                        column: e.column,
+                        outcome: e.outcome,
+                    });
                         slot.0.push(MutResultEntry {
                             file: e.file.clone(),
                             id: e.id,
@@ -597,6 +751,13 @@ fn run_mutation_campaign(ws: &Workspace<'_>, options: &TestOptions, test_args: &
                 }
             }
         }
+
+        // Break the outer loop after JSON output
+        if stop_now
+        {
+            break 'mutators;
+        }
+
     }
     Ok(())
 }
@@ -672,7 +833,13 @@ fn run_unit_tests(
                 .verbose(|shell| shell.status("Running", &cmd))?;
         }
 
-        let exec_result = if suppress_output { cmd.exec_with_output().map(|_| ()) } else { cmd.exec() };
+        let timeout_secs: u64 = std::env::var("CARGO_MUTANT_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(30);
+        let timeout = Duration::from_secs(timeout_secs);
+
+        let exec_result = exec_with_timeout(cmd, timeout);
         if let Err(e) = exec_result {
             let code = fail_fast_code(&e);
             let unit_err = UnitTestError {
@@ -797,7 +964,13 @@ fn run_doc_tests(
                 .verbose(|shell| shell.status("Running", p.to_string()))?;
         }
 
-        let exec_result = if suppress_output { p.exec_with_output().map(|_| ()) } else { p.exec() };
+        let timeout_secs: u64 = std::env::var("CARGO_MUTANT_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(30);
+        let timeout = Duration::from_secs(timeout_secs);
+
+        let exec_result = exec_with_timeout(p, timeout);
         if let Err(e) = exec_result {
             let code = fail_fast_code(&e);
             let unit_err = UnitTestError {
