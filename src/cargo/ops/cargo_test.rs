@@ -404,6 +404,7 @@ fn run_mutation_campaign(ws: &Workspace<'_>, options: &TestOptions, test_args: &
             eprintln!("Killed {}", killed);
             eprintln!("Survived {}", survived);
             eprintln!("Test {}", if survived == 0 && killed == total { "Passed" } else { "Failed" });
+            eprintln!("");
         }
 
         // JSON output if requested: write mutator JSON file by kind
