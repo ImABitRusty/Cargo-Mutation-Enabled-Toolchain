@@ -15,41 +15,6 @@ use std::path::PathBuf;
 use syn::File;
 use syn::visit::Visit;
 
-
-/// Parse all relevant `.rs` files for each workspace member into syn `File` ASTs.
-/// Returns a map from absolute file paths to their parsed ASTs.
-pub fn create_trees(ws: &Workspace<'_>) -> syn::Result<HashMap<PathBuf, File>> {
-    let mut trees = HashMap::new();
-
-    // Iterate over all packages in the workspace (respects `[workspace]`).
-    for package in ws.members() {
-        // Use Cargo's file lister to get the authoritative set of files
-        let files = match src_path::list_files(package, ws.gctx()) {
-            Ok(list) => list,
-            Err(_) => continue,
-        };
-
-        for entry in files.into_iter() {
-            if !entry.is_file() {
-                continue;
-            }
-            let path = entry.into_path_buf();
-            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
-                continue;
-            }
-
-            // Read source and parse into a full-file AST.
-            let source = fs::read_to_string(&path).expect("Failed to open file");
-            let ast: File = syn::parse_file(&source)?;
-            // Minimal progress logging; avoids dumping full ASTs to stderr.
-            eprintln!("Tree created for {:?}", path);
-            trees.insert(path, ast);
-        }
-    }
-
-    Ok(trees)
-}
-
 /// Kinds of operators we currently index for mutation testing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OpKind {
@@ -137,36 +102,6 @@ pub fn index_add_sub_in_file(ast: &File) -> Vec<OpOccurrence> {
     };
     v.visit_file(ast);
     v.occurrences
-}
-
-/// Build operator indexes for the entire workspace.
-/// Internally parses files first via `create_trees` and returns matches per file.
-/// Operators indexed include `+`, `-`, `*`, and `/`.
-pub fn index_add_sub(ws: &Workspace<'_>) -> syn::Result<HashMap<PathBuf, Vec<OpOccurrence>>> {
-    let trees = create_trees(ws)?;
-    let mut index: HashMap<PathBuf, Vec<OpOccurrence>> = HashMap::new();
-    for (path, file_ast) in trees.iter() {
-        let occ = index_add_sub_in_file(file_ast);
-        if !occ.is_empty() {
-            index.insert(path.clone(), occ);
-        }
-    }
-    Ok(index)
-}
-
-/// Variant of the indexer that reuses already-parsed ASTs to avoid reparsing.
-/// Operators indexed include `+`, `-`, `*`, and `/`.
-pub fn index_add_sub_from_trees(
-    trees: &HashMap<PathBuf, File>,
-) -> HashMap<PathBuf, Vec<OpOccurrence>> {
-    let mut index: HashMap<PathBuf, Vec<OpOccurrence>> = HashMap::new();
-    for (path, file_ast) in trees.iter() {
-        let occ = index_add_sub_in_file(file_ast);
-        if !occ.is_empty() {
-            index.insert(path.clone(), occ);
-        }
-    }
-    index
 }
 
 /// Minimum number of operator occurrences in a file to keep its AST cached.

@@ -8,14 +8,6 @@ use std::path::{Path, PathBuf};
 use super::ast_iabr;
 
 
-/// Temporary proof of concept code to print something
-pub fn run_mutations(_ws: &Workspace<'_>) -> CliResult 
-{
-    eprintln!("Mutation call success");
-   // io::stdout().flush().unwrap(); // make sure it prints immediately
-    Ok(())
-}
-
 pub fn list_files(ws: &Workspace<'_>) -> CliResult
 {
     // Set the root of this function to the top level of the passed workspace
