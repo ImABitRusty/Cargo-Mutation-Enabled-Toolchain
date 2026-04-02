@@ -380,12 +380,16 @@ fn run_mutation_campaign(ws: &Workspace<'_>, options: &TestOptions, test_args: &
             {
                 Ok(m) => 
                 {
+                    let mut wrapped = String::from("#![allow(warnings)]\n");
+                    wrapped.push_str(&m);
+
                     if options.mutation_long
                     {
                         eprintln!("[DEBUG] Mutating file: {:?}, id: {}", target.path, target.id);
-                        eprintln!("[DEBUG] Mutated source:\n{}", m);
+                        eprintln!("[DEBUG] Mutated source:\n{}", wrapped);
                     }
-                    m
+                    
+                    wrapped
                 },
                 Err(e) => return Err(anyhow::format_err!
                 (
