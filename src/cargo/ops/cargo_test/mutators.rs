@@ -207,7 +207,47 @@ impl Mutator for LtGtMutator {
     }
 }
 
+// And/Or mutator.
+pub struct AndOrMutator;
 
+impl Mutator for AndOrMutator {
+    fn name(&self) -> &'static str { "and_or" }
+
+    fn build_context(&self, ws: &Workspace<'_>) -> syn::Result<MutationContext> {
+        let IndexResult { index, cached_asts } = build_index_with_cache(ws)?;
+        Ok(MutationContext { index, cached_asts })
+    }
+
+    fn enumerate_targets(&self, ctx: &MutationContext) -> Vec<Target> 
+    {
+        let mut out = Vec::new();
+        for (path, occs) in ctx.index.iter() 
+        {
+
+        let mut local_id = 0;
+        for occ in occs 
+        {
+            // Grab only occurrences of the && and || operators
+            if occ.kind == super::ast_iabr::OpKind::And || occ.kind == super::ast_iabr::OpKind::Or 
+            {
+                out.push(Target 
+                {
+                    path: path.clone(),
+                    id: local_id,
+                    line: occ.line,
+                    column: occ.column,
+                });
+            local_id += 1;
+            }
+        }
+        }
+        out
+    }
+
+    fn mutate(&self, ctx: &MutationContext, target: &Target) -> syn::Result<String> {
+        mutate_and_or(ctx, &target.path, target.id)
+    }
+}
 
 /// Flip Add<->Sub for the given occurrence id in the specified file.
 /// Uses cached AST if available; otherwise parses on demand.
@@ -276,6 +316,24 @@ fn mutate_lt_gt(ctx: &MutationContext, path: &Path, id: u32) -> syn::Result<Stri
 
     // Fold and flip the targeted operator.
     let mut folder = LtGtFlipFold { target_id: id, seen: 0 };
+    let mutated = folder.fold_file(ast);
+
+    // Pretty-print the mutated AST back to source.
+    Ok(prettyplease::unparse(&mutated))
+}
+
+// Flip && <-> ||
+fn mutate_and_or(ctx: &MutationContext, path: &Path, id: u32) -> syn::Result<String> {
+    // Fetch AST from cache or parse source.
+    let ast: File = if let Some(cached) = ctx.cached_asts.get(path) {
+        cached.clone()
+    } else {
+        let src = fs::read_to_string(path).expect("Failed to open file");
+        syn::parse_file(&src)?
+    };
+
+    // Fold and flip the targeted operator.
+    let mut folder = AndOrFlipFold { target_id: id, seen: 0 };
     let mutated = folder.fold_file(ast);
 
     // Pretty-print the mutated AST back to source.
@@ -370,6 +428,30 @@ impl Fold for LtGtFlipFold {
                     syn::BinOp::Ge(Default::default())
                 } else {
                     syn::BinOp::Le(Default::default())
+                };
+            }
+            self.seen += 1;
+        }
+        fold_expr_binary(self, node)
+    }
+}
+
+/// Folder that flips the Nth &&/|| operator where N == target_id.
+struct AndOrFlipFold {
+    target_id: u32,
+    seen: u32,
+}
+
+impl Fold for AndOrFlipFold {
+    fn fold_expr_binary(&mut self, mut node: syn::ExprBinary) -> syn::ExprBinary {
+        let is_and = matches!(node.op, syn::BinOp::And(_));
+        let is_or = matches!(node.op, syn::BinOp::Or(_));
+        if is_and || is_or {
+            if self.seen == self.target_id {
+                node.op = if is_and {
+                    syn::BinOp::Or(Default::default())
+                } else {
+                    syn::BinOp::And(Default::default())
                 };
             }
             self.seen += 1;

@@ -24,7 +24,7 @@ CLI usage on any Cargo project (external or this repo):
 
 Mutation notes
 -------------------------------------------
-- Supported mutators: `add_sub` (Addition <-> Subtraction) and `mul_div` (Multiplication <-> Division).
+- Supported mutators: `add_sub` (Addition <-> Subtraction), `mul_div` (Multiplication <-> Division), `eq_ne` (Equality <-> Inequality), `lt_gt` (Less <- >Greater), `and_or` (And <-> Or).
 
 Compiling Rust
 -------------------------------------------

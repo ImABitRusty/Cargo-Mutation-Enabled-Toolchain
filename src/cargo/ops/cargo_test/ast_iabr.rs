@@ -26,6 +26,8 @@ pub enum OpKind {
     Ne,
     Lt,
     Gt,
+    And,
+    Or,
 }
 
 /// A single operator occurrence with a stable per-file identifier.
@@ -80,6 +82,14 @@ impl<'ast> Visit<'ast> for ArithVisitor {
             syn::BinOp::Ge(tok) => {
                 let lc = tok.spans[0].start();
                 (Some(OpKind::Lt), lc.line as u32, lc.column as u32)
+            }
+            syn::BinOp::And(tok) => {
+                let lc = tok.spans[0].start();
+                (Some(OpKind::And), lc.line as u32, lc.column as u32)
+            }
+            syn::BinOp::Or(tok) => {
+                let lc = tok.spans[0].start();
+                (Some(OpKind::Or), lc.line as u32, lc.column as u32)
             }
             _ => (None, 0, 0),
         };
